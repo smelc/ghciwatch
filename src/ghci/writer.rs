@@ -17,7 +17,13 @@ use tokio_util::compat::TokioAsyncWriteCompatExt;
 /// A dynamically reconfigurable sink for `ghci` process output. Built for use in `GhciOpts`, but
 /// usable as a general purpose clonable [`AsyncWrite`]r.
 #[derive(Debug)]
-pub struct GhciWriter(Kind);
+pub struct GhciWriter {
+    kind: Kind,
+    file: Option<std::fs::File>,
+    buffer: Option<tokio::io::BufWriter>, // TODO Keep a buffer for writing to file *OR* make a
+                                          // tee implementation to split the stream into two
+                                          // outputs
+}
 
 #[derive(Debug)]
 enum Kind {
@@ -30,24 +36,36 @@ enum Kind {
 impl GhciWriter {
     /// Write to `stdout`.
     pub fn stdout() -> Self {
-        Self(Kind::Stdout(tokio::io::stdout()))
+        Self {
+            kind: Kind::Stdout(tokio::io::stdout()),
+            file: None,
+        }
     }
 
     /// Write to `stderr`.
     pub fn stderr() -> Self {
-        Self(Kind::Stderr(tokio::io::stderr()))
+        Self {
+            kind: Kind::Stderr(tokio::io::stderr()),
+            file: None,
+        }
     }
 
     /// Write to an in-memory buffer.
     pub fn duplex_stream(duplex_stream: DuplexStream) -> Self {
-        Self(Kind::DuplexStream(
-            Arc::new(Mutex::new(duplex_stream.compat_write())).compat_write(),
-        ))
+        Self {
+            kind: Kind::DuplexStream(
+                Arc::new(Mutex::new(duplex_stream.compat_write())).compat_write(),
+            ),
+            file: None,
+        }
     }
 
     /// Write to the void.
     pub fn sink() -> Self {
-        Self(Kind::Sink(tokio::io::sink()))
+        Self {
+            kind: Kind::Sink(tokio::io::sink()),
+            file: None,
+        }
     }
 }
 
@@ -57,7 +75,9 @@ impl AsyncWrite for GhciWriter {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        match Pin::into_inner(self).0 {
+        let inner = Pin::into_inner(self);
+
+        match inner.kind {
             Kind::Stdout(ref mut x) => Pin::new(x).poll_write(cx, buf),
             Kind::Stderr(ref mut x) => Pin::new(x).poll_write(cx, buf),
             Kind::DuplexStream(ref mut x) => Pin::new(x).poll_write(cx, buf),
@@ -66,7 +86,7 @@ impl AsyncWrite for GhciWriter {
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        match Pin::into_inner(self).0 {
+        match Pin::into_inner(self).kind {
             Kind::Stdout(ref mut x) => Pin::new(x).poll_flush(cx),
             Kind::Stderr(ref mut x) => Pin::new(x).poll_flush(cx),
             Kind::DuplexStream(ref mut x) => Pin::new(x).poll_flush(cx),
@@ -75,7 +95,7 @@ impl AsyncWrite for GhciWriter {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        match Pin::into_inner(self).0 {
+        match Pin::into_inner(self).kind {
             Kind::Stdout(ref mut x) => Pin::new(x).poll_shutdown(cx),
             Kind::Stderr(ref mut x) => Pin::new(x).poll_shutdown(cx),
             Kind::DuplexStream(ref mut x) => Pin::new(x).poll_shutdown(cx),
@@ -86,10 +106,13 @@ impl AsyncWrite for GhciWriter {
 
 impl Clone for GhciWriter {
     fn clone(&self) -> Self {
-        match &self.0 {
+        match &self.kind {
             Kind::Stdout(_) => Self::stdout(),
             Kind::Stderr(_) => Self::stderr(),
-            Kind::DuplexStream(x) => Self(Kind::DuplexStream(x.clone())),
+            Kind::DuplexStream(x) => Self {
+                kind: Kind::DuplexStream(x.clone()),
+                file: None, // FIXME
+            },
             Kind::Sink(_) => Self::sink(),
         }
     }

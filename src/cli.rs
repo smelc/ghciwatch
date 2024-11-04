@@ -75,6 +75,10 @@ pub struct Opts {
     #[arg(long, alias = "outputfile", alias = "errors")]
     pub error_file: Option<Utf8PathBuf>,
 
+    /// A file to write GHCI stdout to.
+    #[arg(long)]
+    pub ghci_output: Option<Utf8PathBuf>,
+
     /// Evaluate Haskell code in comments.
     ///
     /// This parses line commands starting with `-- $>` or multiline commands delimited by `{- $>`
